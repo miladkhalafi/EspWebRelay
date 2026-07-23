@@ -2,7 +2,7 @@
 
 Control an **ESP-01 / ESP-01S 5V Relay Module** from a mobile-friendly web panel. Uses the Arduino IDE (not PlatformIO).
 
-If the module cannot join WiFi, it starts an access point with a config portal so you can enter credentials and still toggle the relay.
+If the module cannot join WiFi, it starts an access point with a config portal so you can scan networks, choose one, enter the password, and still toggle the relay.
 
 ## Hardware
 
@@ -64,7 +64,7 @@ No extra libraries are required (`ESP8266WiFi`, `ESP8266WebServer`, `EEPROM` shi
    - **Password:** `relay1234`
 3. Open a browser to **http://192.168.4.1**
 4. Use **Turn ON / OFF** to control the relay.
-5. Under **WiFi settings**, enter your home SSID and password → **Save & Connect**.
+5. Under **WiFi settings**, tap a scanned network (or type the SSID), enter the password → **Save & Connect**.
 6. The device reboots and joins your network. Check Serial Monitor (115200 baud) for the LAN IP, then open that IP in a browser.
 
 If STA join fails within ~15 seconds, it returns to AP mode.
@@ -75,6 +75,7 @@ If STA join fails within ~15 seconds, it returns to AP mode.
 |--------|---------------|---------------------------------------------|
 | GET    | `/`           | Control panel (WiFi form shown in AP mode)  |
 | GET    | `/wifi`       | Panel with WiFi settings (also in STA)      |
+| GET    | `/scan`       | JSON list of nearby WiFi networks           |
 | GET    | `/on`         | Relay ON                                    |
 | GET    | `/off`        | Relay OFF                                   |
 | GET    | `/toggle`     | Toggle relay                                |

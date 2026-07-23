@@ -108,7 +108,7 @@ void startAP() {
   String apSsid = "ESP-Relay-" + String(ESP.getChipId() & 0xFFFF, HEX);
   apSsid.toUpperCase();
 
-  WiFi.mode(WIFI_AP);
+  WiFi.mode(WIFI_AP_STA);
   WiFi.softAP(apSsid.c_str(), AP_PASSWORD);
   apMode = true;
 
@@ -135,9 +135,34 @@ String htmlEscape(const String &s) {
   return out;
 }
 
+String jsonEscape(const String &s) {
+  String out;
+  out.reserve(s.length() + 8);
+  for (size_t i = 0; i < s.length(); i++) {
+    char c = s[i];
+    if (c == '\\' || c == '"') {
+      out += '\\';
+      out += c;
+    } else if (c == '\n') {
+      out += F("\\n");
+    } else if (c == '\r') {
+      out += F("\\r");
+    } else if (c == '\t') {
+      out += F("\\t");
+    } else if ((uint8_t)c < 0x20) {
+      char buf[7];
+      snprintf(buf, sizeof(buf), "\\u%04x", (uint8_t)c);
+      out += buf;
+    } else {
+      out += c;
+    }
+  }
+  return out;
+}
+
 String buildPage(bool showWifiForm) {
   String html;
-  html.reserve(2800);
+  html.reserve(5200);
   html += F(
     "<!DOCTYPE html><html lang=\"en\"><head>"
     "<meta charset=\"utf-8\">"
@@ -166,8 +191,20 @@ String buildPage(bool showWifiForm) {
     "input{width:100%;padding:.9rem 1rem;border-radius:10px;border:1px solid #334155;"
     "background:#151b24;color:#e7ecf1;font-size:1.05rem;margin-bottom:.85rem}"
     "button.save{background:#3b82f6;color:#fff}"
+    "button.scan{background:#1c2430;color:#e7ecf1;margin-bottom:.75rem}"
+    "button.scan:disabled{opacity:.6}"
     "button.danger{background:#7f1d1d;color:#fecaca;margin-top:.5rem}"
     "p.hint{color:#9aa7b5;font-size:.85rem;line-height:1.4;margin:.5rem 0 0}"
+    "#netStatus{color:#9aa7b5;font-size:.85rem;margin:0 0 .5rem;min-height:1.2em}"
+    "#netList{list-style:none;margin:0 0 1rem;padding:0;max-height:220px;overflow:auto;"
+    "border:1px solid #334155;border-radius:10px;background:#151b24}"
+    "#netList:empty{display:none}"
+    "#netList li{display:flex;justify-content:space-between;align-items:center;gap:.75rem;"
+    "padding:.85rem 1rem;border-bottom:1px solid #243041;cursor:pointer}"
+    "#netList li:last-child{border-bottom:0}"
+    "#netList li:active,#netList li.sel{background:#1c2430}"
+    "#netList .n{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}"
+    "#netList .m{color:#9aa7b5;font-size:.8rem;flex-shrink:0}"
     "</style></head><body><main>"
   );
 
@@ -194,6 +231,9 @@ String buildPage(bool showWifiForm) {
     html += F(
       "<section>"
       "<h2>WiFi settings</h2>"
+      "<button class=\"scan\" type=\"button\" id=\"scanBtn\">Scan networks</button>"
+      "<p id=\"netStatus\">Scanning…</p>"
+      "<ul id=\"netList\"></ul>"
       "<form method=\"POST\" action=\"/wifi\">"
       "<label for=\"ssid\">SSID</label>"
       "<input id=\"ssid\" name=\"ssid\" type=\"text\" maxlength=\"32\" required "
@@ -211,8 +251,46 @@ String buildPage(bool showWifiForm) {
       "onsubmit=\"return confirm('Clear saved WiFi and restart into AP mode?');\">"
       "<button class=\"danger\" type=\"submit\">Forget WiFi</button>"
       "</form>"
-      "<p class=\"hint\">After saving, the device reboots and tries to join your network. "
-      "If that fails, it returns to AP mode.</p>"
+      "<p class=\"hint\">Tap a network to fill SSID, enter the password, then Save &amp; Connect. "
+      "The device reboots and tries to join. If that fails, it returns to AP mode.</p>"
+      "<script>"
+      "var btn=document.getElementById('scanBtn'),"
+      "st=document.getElementById('netStatus'),"
+      "list=document.getElementById('netList'),"
+      "ssid=document.getElementById('ssid'),"
+      "pass=document.getElementById('pass');"
+      "function pick(s,el){"
+      "ssid.value=s;"
+      "var els=list.querySelectorAll('li');"
+      "for(var i=0;i<els.length;i++)els[i].classList.remove('sel');"
+      "if(el)el.classList.add('sel');"
+      "pass.focus();"
+      "}"
+      "function scan(){"
+      "btn.disabled=true;"
+      "st.textContent='Scanning…';"
+      "list.innerHTML='';"
+      "fetch('/scan').then(function(r){return r.json()}).then(function(nets){"
+      "if(!nets.length){st.textContent='No networks found.';return;}"
+      "st.textContent=nets.length+' network'+(nets.length===1?'':'s')+' — tap to select';"
+      "nets.sort(function(a,b){return b.rssi-a.rssi});"
+      "nets.forEach(function(n){"
+      "if(!n.ssid)return;"
+      "var li=document.createElement('li');"
+      "var left=document.createElement('span');left.className='n';"
+      "left.textContent=n.ssid+(n.secure?' (locked)':'');"
+      "var right=document.createElement('span');right.className='m';"
+      "right.textContent=n.rssi+' dBm';"
+      "li.appendChild(left);li.appendChild(right);"
+      "li.onclick=function(){pick(n.ssid,li)};"
+      "list.appendChild(li);"
+      "});"
+      "}).catch(function(){st.textContent='Scan failed. Try again.';})"
+      ".then(function(){btn.disabled=false;});"
+      "}"
+      "btn.onclick=scan;"
+      "scan();"
+      "</script>"
       "</section>"
     );
   } else {
@@ -256,6 +334,31 @@ void handleStatus() {
   json += F(",\"mode\":\"");
   json += apMode ? F("AP") : F("STA");
   json += F("\"}");
+  server.send(200, "application/json", json);
+}
+
+void handleScan() {
+  int n = WiFi.scanNetworks(/*async=*/false, /*hidden=*/false);
+  if (n < 0) {
+    n = 0;
+  }
+  String json;
+  json.reserve(n > 0 ? n * 64 : 16);
+  json += '[';
+  for (int i = 0; i < n; i++) {
+    if (i > 0) {
+      json += ',';
+    }
+    json += F("{\"ssid\":\"");
+    json += jsonEscape(WiFi.SSID(i));
+    json += F("\",\"rssi\":");
+    json += WiFi.RSSI(i);
+    json += F(",\"secure\":");
+    json += (WiFi.encryptionType(i) != ENC_TYPE_NONE) ? F("true") : F("false");
+    json += '}';
+  }
+  json += ']';
+  WiFi.scanDelete();
   server.send(200, "application/json", json);
 }
 
@@ -303,6 +406,7 @@ void setupWebRoutes() {
   server.on("/off", HTTP_GET, handleOff);
   server.on("/toggle", HTTP_GET, handleToggle);
   server.on("/status", HTTP_GET, handleStatus);
+  server.on("/scan", HTTP_GET, handleScan);
   server.on("/wifi", HTTP_POST, handleWifiSave);
   server.on("/reset-wifi", HTTP_POST, handleResetWifi);
   server.onNotFound([]() {
