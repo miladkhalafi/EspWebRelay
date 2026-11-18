@@ -65,7 +65,7 @@ No extra libraries are required (`ESP8266WiFi`, `ESP8266WebServer`, `EEPROM` shi
 3. Open a browser to **http://192.168.4.1**
 4. Use **Turn ON / OFF** to control the relay.
 5. Under **WiFi settings**, tap a scanned network (or type the SSID), enter the password → **Save & Connect**.
-6. The device reboots and joins your network. Check Serial Monitor (115200 baud) for the LAN IP, then open that IP in a browser.
+6. The device reboots and joins your network as hostname **`ESP-Relay-XXXX`** (same as the AP SSID). Check Serial Monitor (115200 baud) for the LAN IP, then open that IP (or the hostname, if your router/DNS supports it) in a browser.
 
 If STA join fails within ~15 seconds, it returns to AP mode.
 

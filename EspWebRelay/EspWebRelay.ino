@@ -21,6 +21,7 @@ struct WifiCreds {
 // ---- AP defaults ----
 #define AP_PASSWORD "relay1234"
 #define STA_TIMEOUT_MS 15000UL
+#define STA_RETRY_MS 45000UL
 
 ESP8266WebServer server(80);
 
@@ -28,6 +29,7 @@ bool relayOn = false;
 bool apMode = false;
 char savedSsid[SSID_MAX + 1] = "";
 char savedPass[PASS_MAX + 1] = "";
+unsigned long lastStaAttemptMs = 0;
 
 // ---- Relay ----
 void setRelay(bool on) {
@@ -76,14 +78,41 @@ void clearWifi() {
 }
 
 // ---- WiFi modes ----
+String deviceName() {
+  String name = "ESP-Relay-" + String(ESP.getChipId() & 0xFFFF, HEX);
+  name.toUpperCase();
+  return name;
+}
+
+void applyHostname() {
+  String name = deviceName();
+  WiFi.hostname(name);
+  Serial.print(F("Hostname: "));
+  Serial.println(name);
+}
+
+void promoteToSta() {
+  apMode = false;
+  WiFi.setAutoReconnect(true);
+  WiFi.softAPdisconnect(true);
+  WiFi.mode(WIFI_STA);
+
+  Serial.print("STA connected. IP: ");
+  Serial.println(WiFi.localIP());
+}
+
 bool connectSTA() {
   if (savedSsid[0] == '\0') {
     return false;
   }
 
   Serial.printf("Connecting to WiFi: %s\n", savedSsid);
+  WiFi.persistent(false);
   WiFi.mode(WIFI_STA);
+  applyHostname();
+  WiFi.setAutoReconnect(true);
   WiFi.begin(savedSsid, savedPass);
+  lastStaAttemptMs = millis();
 
   unsigned long start = millis();
   while (WiFi.status() != WL_CONNECTED && (millis() - start) < STA_TIMEOUT_MS) {
@@ -93,24 +122,26 @@ bool connectSTA() {
   Serial.println();
 
   if (WiFi.status() == WL_CONNECTED) {
-    apMode = false;
-    Serial.print("STA connected. IP: ");
-    Serial.println(WiFi.localIP());
+    promoteToSta();
     return true;
   }
 
   Serial.println("STA connect failed.");
-  WiFi.disconnect(true);
+  WiFi.disconnect(/*wifioff=*/false);
   return false;
 }
 
 void startAP() {
-  String apSsid = "ESP-Relay-" + String(ESP.getChipId() & 0xFFFF, HEX);
-  apSsid.toUpperCase();
+  String apSsid = deviceName();
 
+  // Keep STA available so saved credentials can reconnect in the background
+  // (common after power outages when the router boots slower than the ESP).
+  WiFi.persistent(false);
   WiFi.mode(WIFI_AP_STA);
+  applyHostname();
   WiFi.softAP(apSsid.c_str(), AP_PASSWORD);
   apMode = true;
+  lastStaAttemptMs = millis();
 
   Serial.print("AP started: ");
   Serial.print(apSsid);
@@ -118,6 +149,42 @@ void startAP() {
   Serial.println(AP_PASSWORD);
   Serial.print("AP IP: ");
   Serial.println(WiFi.softAPIP());
+
+  if (savedSsid[0] != '\0') {
+    Serial.println(F("Will keep retrying saved WiFi in background."));
+    WiFi.setAutoReconnect(true);
+    WiFi.begin(savedSsid, savedPass);
+  }
+}
+
+void maintainWifi() {
+  if (savedSsid[0] == '\0') {
+    return;
+  }
+
+  if (WiFi.status() == WL_CONNECTED) {
+    if (apMode) {
+      promoteToSta();
+    }
+    return;
+  }
+
+  unsigned long now = millis();
+  if (now - lastStaAttemptMs < STA_RETRY_MS) {
+    return;
+  }
+
+  lastStaAttemptMs = now;
+  Serial.printf("Retrying WiFi: %s\n", savedSsid);
+
+  if (apMode) {
+    WiFi.mode(WIFI_AP_STA);
+  } else {
+    WiFi.mode(WIFI_STA);
+  }
+  applyHostname();
+  WiFi.setAutoReconnect(true);
+  WiFi.begin(savedSsid, savedPass);
 }
 
 // ---- HTML ----
@@ -439,4 +506,5 @@ void setup() {
 
 void loop() {
   server.handleClient();
+  maintainWifi();
 }
